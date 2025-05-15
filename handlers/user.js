@@ -1,68 +1,52 @@
-const db = require('../db');
-
-module.exports = (bot) => {
-    // Показати баланс
-    bot.hears('Мій баланс', async ctx => {
-        const res = await db.query(
-            'SELECT balance FROM users WHERE id=$1',
-            [ctx.session.userId]
-        );
-        const balance = res.rows[0]?.balance || 0;
-        return ctx.reply(`Ваш поточний баланс: ${balance} грн`);
-    });
-
-    // Почати виведення коштів
-    bot.hears('Вивести кошти', ctx => {
-        ctx.session.withdrawStep = 'amount';
-        return ctx.reply('Введіть суму для виведення:');
-    });
-
-    // Обробка введення суми для виведення
-    bot.on('text', async ctx => {
-        if (ctx.session.withdrawStep === 'amount') {
-            const amount = parseFloat(ctx.message.text.replace(',', '.'));
-            // Перевірка валідності
-            if (isNaN(amount) || amount <= 0) {
-                return ctx.reply('Невірний формат суми. Введіть число:');
+module.exports = (bot, prisma) => {
+    // Додавання платежу /add_payment
+    bot.command('add_payment', async (ctx) => {
+        const step = { stage: 0, data: {} };
+        const listener = async (msgCtx) => {
+            const text = msgCtx.message.text.trim().split(' ');
+            if (step.stage === 0) {
+                const [sumStr, cur] = text;
+                const sum = parseFloat(sumStr);
+                if (isNaN(sum) || !['uah','eur','usd'].includes(cur)) {
+                    return msgCtx.reply('Невірно. Формат: 100 usd');
+                }
+                step.data = { sum, currency: cur };
+                step.stage = 1;
+                return msgCtx.reply('Введіть ID проекту:');
             }
-            // Перевірка балансу
-            const res = await db.query(
-                'SELECT balance FROM users WHERE id=$1', [ctx.session.userId]
-            );
-            const balance = parseFloat(res.rows[0]?.balance || 0);
-            if (amount > balance) {
-                ctx.session.withdrawStep = null;
-                return ctx.reply('Недостатньо коштів. Спробуйте іншу суму або натисніть Мій баланс.');
+            if (step.stage === 1) {
+                const projectId = parseInt(text[0]);
+                const project = await prisma.project.findUnique({ where: { id: projectId } });
+                if (!project) return msgCtx.reply('Проект не знайдено.');
+                const { sum, currency } = step.data;
+                await prisma.payment.create({ data: { amount: sum, currency, projectId, userId: ctx.from.id } });
+                const users = await prisma.projectUser.findMany({ where: { projectId } });
+                const share = sum / users.length;
+                await Promise.all(users.map(u => prisma.user.update({ where:{id:u.userId}, data:{[`balance_${currency}`]:{increment:share}} })))
+                await msgCtx.reply(`Платіж розподілено між ${users.length}`);
+                bot.off('text', listener);
             }
-            ctx.session.withdrawAmount = amount;
-            ctx.session.withdrawStep = 'card';
-            return ctx.reply('Введіть номер картки для виведення:');
-        }
-        if (ctx.session.withdrawStep === 'card') {
-            const cardNumber = ctx.message.text.trim();
-            // TODO: валідація формату картки
-            await db.query(
-                'INSERT INTO withdrawals(user_id, card_id, amount, status) VALUES($1, (SELECT id FROM cards WHERE card_number=$2), $3, $4)',
-                [ctx.session.userId, cardNumber, ctx.session.withdrawAmount, 'pending']
-            );
-            ctx.session.withdrawStep = null;
-            return ctx.reply('Заявка на виведення створена. Адміністратор обробить її найближчим часом.');
-        }
+        };
+        await ctx.reply('Введіть суму та валюту, напр.: 100 usd');
+        bot.on('text', listener);
     });
 
-    // Статистика: загальні суми платежів та виведень
-    bot.hears('Статистика', async ctx => {
-        const pay = await db.query(
-            'SELECT SUM(amount) AS total_payments FROM payments'
-        );
-        const wd = await db.query(
-            'SELECT SUM(amount) AS total_withdrawals FROM withdrawals'
-        );
-        return ctx.reply(
-            `Статистика:+
-        Усього платежів: ${pay.rows[0].total_payments || 0} грн
-+
-        Усього виведено: ${wd.rows[0].total_withdrawals || 0} грн`
-        );
+    // Виведення коштів
+    bot.action('withdraw', async (ctx) => {
+        await ctx.answerCbQuery();
+        const listener = async (msgCtx) => {
+            const [sumStr, cur] = msgCtx.message.text.trim().split(' ');
+            const sum = parseFloat(sumStr);
+            if (isNaN(sum) || !['uah','eur','usd'].includes(cur)) return msgCtx.reply('Спробуйте ще раз.');
+            const user = await prisma.user.findUnique({ where:{ username:ctx.from.username}, select:{[`balance_${cur}`]:true} });
+            if (user[`balance_${cur}`] < sum) {
+                return msgCtx.reply(`Недостатньо. Ваш баланс: ${user[`balance_${cur}`]}`);
+            }
+            await prisma.withdrawal.create({ data:{ amount: sum, currency: cur, userId: user.id } });
+            await prisma.user.update({ where:{id:user.id}, data:{[`balance_${cur}`]:{decrement: sum}} });
+            return msgCtx.reply(`Виведено ${sum} ${cur}`);
+        };
+        await ctx.reply('Введіть суму та валюту, напр.: 50 eur');
+        bot.on('text', listener);
     });
 };
