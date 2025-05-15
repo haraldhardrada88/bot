@@ -26,3 +26,4 @@ bot.catch((err, ctx) => {
 bot.launch()
     .then(() => console.log('Bot started'))
     .catch(err => console.error('Bot failed to start:', err));
+
