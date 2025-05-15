@@ -4,18 +4,26 @@ enum CurrencyType {
   eur
 }
 
+enum WithdrawalStatus {
+  pending
+  confirmed
+  cancelled
+}
+
 model User {
-  id           Int       @id @default(autoincrement())
-  username     String    @unique
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
   password     String
-  role         String    @default("user")
-  balance_uah  Decimal   @db.Decimal(12, 2) @default(0.00)
-  balance_usd  Decimal   @db.Decimal(12, 2) @default(0.00)
-  balance_eur  Decimal   @db.Decimal(12, 2) @default(0.00)
-  createdAt    DateTime  @default(now())
+  role         String   @default("user")
+  balance_uah  Decimal  @db.Decimal(12, 2) @default(0.00)
+  balance_usd  Decimal  @db.Decimal(12, 2) @default(0.00)
+  balance_eur  Decimal  @db.Decimal(12, 2) @default(0.00)
+  createdAt    DateTime @default(now())
 
   payments     Payment[]
   withdrawals  Withdrawal[]
+
+  @@map("User")
 }
 
 model Payment {
@@ -26,15 +34,21 @@ model Payment {
   user       User          @relation(fields: [userId], references: [id])
   projectId  Int?
   createdAt  DateTime      @default(now())
+
+  @@map("Payment")
 }
 
 model Withdrawal {
-  id         Int           @id @default(autoincrement())
-  amount     Decimal       @db.Decimal(12, 2)
-  currency   CurrencyType  @default(uah)
-  userId     Int
-  user       User          @relation(fields: [userId], references: [id])
-  createdAt  DateTime      @default(now())
+  id          Int              @id @default(autoincrement())
+  amount      Decimal          @db.Decimal(12, 2)
+  currency    CurrencyType     @default(uah)
+  userId      Int
+  user        User             @relation(fields: [userId], references: [id])
+  createdAt   DateTime         @default(now())
+  cardNumber  String
+  status      WithdrawalStatus @default(pending)
+
+  @@map("Withdrawal")
 }
 
 generator client {

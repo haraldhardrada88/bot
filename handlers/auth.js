@@ -1,34 +1,44 @@
-const db = require('../db');
+const { Markup } = require('telegraf');
 
-module.exports = (bot) => {
+module.exports = function authHandler(bot, prisma, sessions) {
+    // /start запускає логін-флоу
+    bot.start(async (ctx) => {
+        const sid = ctx.from.id;
+        sessions.set(sid, {
+            stage: 0,
+            data: {},
+            telegramId: sid   // зберігаємо telegramId
+        });
+        return ctx.reply('Вітаю! Введіть ваш username:', Markup.removeKeyboard());
+    });
+
+    // Логін: username → password
     bot.on('text', async (ctx, next) => {
+        const sid = ctx.from.id;
+        const session = sessions.get(sid);
+        if (!session || session.authenticated) return next();
+
         const text = ctx.message.text.trim();
-
-        // Якщо крок авторизації = username
-        if (ctx.session.authStep === 'username') {
-            ctx.session.username = text;
-            ctx.session.authStep = 'password';
-            return ctx.reply('Введіть пароль:');
+        if (session.stage === 0) {
+            session.data.username = text;
+            session.stage = 1;
+            return ctx.reply('Тепер введіть ваш пароль:');
         }
-
-        // Якщо крок авторизації = password
-        if (ctx.session.authStep === 'password') {
-            const res = await db.query(
-                'SELECT * FROM users WHERE LOWER(username)=LOWER($1)',
-                [ctx.session.username]
-            );
-            if (!res.rows.length) return ctx.reply('Користувача не знайдено. /start');
-            const user = res.rows[0];
-            if (text !== user.password) return ctx.reply('Невірний пароль. /start');
-
-            // Успішна авторизація
-            ctx.session.isAuthenticated = true;
-            ctx.session.userId = user.id;
-            ctx.session.authStep = null;
-            return ctx.reply('Успішно авторизовано! Оберіть дію:', require('../keyboards/mainMenu'));
+        if (session.stage === 1) {
+            const { username } = session.data;
+            const password = text;
+            const user = await prisma.user.findUnique({ where: { username } });
+            if (!user || user.password !== password) {
+                sessions.delete(sid);
+                return ctx.reply('Невірний логін або пароль. Виконайте /start ще раз.');
+            }
+            // успішна автентифікація
+            session.authenticated = true;
+            session.userId = user.id;
+            session.role = user.role;
+            session.stage = null;
+            const mainKb = require('../keyboards/main');
+            return ctx.reply('Успішно увійшли!', mainKb(user.role));
         }
-
-        // Якщо ні один з кроків авторизації — передаємо повідомлення далі до інших обробників
-        return next();
     });
 };
